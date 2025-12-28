@@ -39,14 +39,16 @@ class Stage1Collector:
     def collect(
         self,
         scoring_data: Dict[str, Any],
-        environments: List[str]
+        environments: List[str],
+        env_configs: Dict[str, Any] = None
     ) -> Stage1Output:
         """Collect and process scoring data for all miners.
         
         Args:
             scoring_data: Response from /api/v1/samples/scoring endpoint
                 Format: {
-                    "uid": {
+                    "hotkey#revision": {
+                        "uid": 5,
                         "hotkey": "5...",
                         "model_revision": "...",
                         "env": {
@@ -60,6 +62,7 @@ class Stage1Collector:
                     }
                 }
             environments: List of environment names participating in scoring
+            env_configs: Dict mapping env_name -> env_config (including min_completeness)
             
         Returns:
             Stage1Output containing processed miner data
@@ -67,6 +70,9 @@ class Stage1Collector:
         Raises:
             RuntimeError: If scoring_data is invalid or contains API error response
         """
+        # Initialize env_configs if not provided
+        if env_configs is None:
+            env_configs = {}
         # Validate scoring_data is not an error response
         if not isinstance(scoring_data, dict):
             raise RuntimeError(f"Invalid scoring_data type: {type(scoring_data)}")
@@ -93,11 +99,17 @@ class Stage1Collector:
         valid_count = 0
         invalid_count = 0
         
-        for uid_str, miner_entry in scoring_data.items():
+        for key, miner_entry in scoring_data.items():
+            # Extract UID from miner_entry
+            uid = miner_entry.get('uid')
+            if uid is None:
+                logger.warning(f"Missing uid field in miner_entry for key {key}")
+                continue
+            
             try:
-                uid = int(uid_str)
+                uid = int(uid)
             except (ValueError, TypeError):
-                logger.warning(f"Invalid UID format: {uid_str}")
+                logger.warning(f"Invalid UID value: {uid} for key {key}")
                 continue
 
             # Extract miner metadata
@@ -156,8 +168,12 @@ class Stage1Collector:
                 else:
                     avg_score = raw_avg_score
                 
+                # Get environment-specific min_completeness or use default
+                env_config = env_configs.get(env_name, {})
+                env_min_completeness = env_config.get('min_completeness', self.min_completeness)
+                
                 # Validate completeness
-                is_valid = completeness >= self.min_completeness
+                is_valid = completeness >= env_min_completeness
                 
                 # Calculate required score threshold
                 threshold = calculate_required_score(
@@ -179,7 +195,7 @@ class Stage1Collector:
                 # Only log invalid environments in DEBUG mode
                 if not is_valid:
                     logger.debug(
-                        f"UID {uid} {env_name}: completeness {completeness:.2%} < {self.min_completeness:.0%}"
+                        f"UID {uid} {env_name}: completeness {completeness:.2%} < {env_min_completeness:.0%}"
                     )
             
             # Check if miner has at least one valid environment
